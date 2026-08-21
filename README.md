@@ -1,5 +1,7 @@
 # ppt-to-video
 
+*Read this in: **English** | [한국어](README.ko.md)*
+
 A Claude Code Skill that turns a PowerPoint deck into a narrated video with
 real PowerPoint element animation — or re-cuts/re-voices an existing
 presentation-style video — without ever re-drawing slides in HTML.
@@ -35,7 +37,7 @@ run this elsewhere.
 Clone into your Claude Code skills directory:
 
 ```bash
-git clone https://github.com/<owner>/ppt-to-video.git ~/.claude/skills/ppt-to-video
+git clone https://github.com/olymplan427-rgb/ppt-to-video.git ~/.claude/skills/ppt-to-video
 ```
 
 Then, from any project where you want to build a video:
@@ -59,7 +61,9 @@ cp -r ~/.claude/skills/ppt-to-video/scripts/revoice ./revoice
 
 See [SKILL.md](SKILL.md) for the workflow Claude follows, and
 [references/pipeline.md](references/pipeline.md) for the full manifest
-schema, animation internals, and known limitations.
+schema, animation internals, and known limitations. (Note: this repo's
+deeper docs and code comments are written in Korean — only this README
+is bilingual for now.)
 
 Quick loop once you have a manifest:
 
