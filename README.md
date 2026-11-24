@@ -9,6 +9,7 @@ without ever redrawing slides in HTML.
 
 ## Highlights
 
+- **Direct PPTX authoring & editing (`revoice.ppt_edit`)**: Format-preserving run-level text replacement, brand-consistent slide duplication, bulk theme hex recoloring, high-DPI PDF page insertion, and fast per-slide PNG visual QA previews.
 - **Pixel-faithful slide rendering**: Uses native PowerPoint COM on Windows (including element-by-element fade-in animations synced to speech checkpoints) and automatically falls back to LibreOffice headless + PyMuPDF (or `--reuse-pngs`) on macOS/Linux/no-PowerPoint machines.
 - **Single-speaker & 2-host podcast TTS**: Gemini TTS with `MultiSpeakerVoiceConfig`, automatic 429/503 retries, silence padding trimmer, and a TTS-only pronunciation dictionary (`pronounce`) that keeps subtitles clean.
 - **Whisper word-synced subtitles**: Aligns subtitles to real spoken timestamps via `faster-whisper`, prevents awkward line breaks, and flips subtitle contrast automatically for light vs. dark slide bottoms.

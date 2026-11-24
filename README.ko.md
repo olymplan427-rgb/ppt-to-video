@@ -8,6 +8,7 @@ AI 에이전트 스킬(Claude Code / Antigravity 공용) 및 Python 파이프라
 
 ## 주요 기능
 
+- **PPT 직접 제작·수정(`revoice.ppt_edit`)**: 서식을 보존하는 run 단위 문구 치환, 기존 브랜드 슬라이드 복제·추가, 테마 hex 일괄 치환, PDF 표지 추출·삽입, 수정 슬라이드 즉시 PNG 시각 검수까지 지원한다.
 - **원본 슬라이드 100% 보존**: Windows에서는 PowerPoint COM(네이티브 요소 페이드인 애니메이션 포함), macOS/Linux/미설치 PC에서는 LibreOffice 헤드리스(+PyMuPDF) 또는 수동 PNG(`--reuse-pngs`)로 자동 동작한다.
 - **1인 나레이션 & 2인 팟캐스트 TTS**: Gemini TTS(`MultiSpeakerVoiceConfig`)로 두 화자의 자연스러운 대화를 합성하고, 503/429 재시도 · 무음 패딩 트리밍 · 발음 보정 사전(`pronounce`)을 내장했다.
 - **Whisper 단어 싱크 자막**: 합성 음성을 `faster-whisper`로 전사해 실제 발화 시각에 자막을 맞추고, 배경 밝기에 따라 자막 박스 색상을 자동 반전한다.

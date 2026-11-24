@@ -30,8 +30,10 @@ python scripts/check_env.py
 ## 워크플로우
 
 전체 단계·매니페스트 스키마·마감(`finalize`)·트러블슈팅은
-[references/pipeline.md](references/pipeline.md) 참고. 요약:
+[references/pipeline.md](references/pipeline.md), **PPT 직접 제작·수정 가이드**는
+[references/ppt_authoring.md](references/ppt_authoring.md) 참고. 요약:
 
+0. **(선택) PPT 직접 제작·수정**: 문구 교체·신규 슬라이드 추가·컬러 테마 변경·PDF 표지 삽입이 필요하면 `revoice.ppt_edit`으로 원본 `.pptx`를 직접 편집한다(서식 보존 run 치환 + 기존 슬라이드 복제). 수정 후 반드시 `python -m revoice.ppt_edit preview <새PPT> _preview --slides <번호>`로 PNG를 뽑아 로고 겹침·줄바꿈·여백을 시각 검수한다.
 1. **인제스트**: `python -m revoice.deck <파일.pptx> [출력폴더]`
    - Windows PowerPoint COM / macOS LibreOffice 자동 선택 → `slide_NN.png` + `outline.json`
    - 이미 수동으로 PNG를 뽑아 두었다면 `--reuse-pngs` 옵션 사용
