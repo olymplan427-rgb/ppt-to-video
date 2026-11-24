@@ -9,7 +9,7 @@ def _joined(cmd):
 
 def test_vo_segment_trims_source_range():
     plan = ReconcilePlan(scene_dur=20.0, video_setpts=None, video_freeze=0.0, audio_pad=4.0)
-    cmd = build_vo_segment_cmd("source/base.mp4", "0:06", "0:32",
+    cmd = build_vo_segment_cmd("source/eDV49.mp4", "0:06", "0:32",
                                "audio/SC01.wav", plan, "build/seg_SC01.mp4")
     s = _joined(cmd)
     assert cmd[0] == "ffmpeg"
@@ -22,7 +22,7 @@ def test_vo_segment_trims_source_range():
 
 def test_vo_segment_slowdown_and_freeze():
     plan = ReconcilePlan(scene_dur=30.0, video_setpts=1.08, video_freeze=8.4, audio_pad=0.0)
-    cmd = build_vo_segment_cmd("source/base.mp4", "0:40", "1:02",
+    cmd = build_vo_segment_cmd("source/eDV49.mp4", "0:40", "1:02",
                                "audio/SC02.wav", plan, "build/seg_SC02.mp4")
     s = _joined(cmd)
     assert "setpts=1.0800*PTS" in s
@@ -30,7 +30,7 @@ def test_vo_segment_slowdown_and_freeze():
     assert "apad" not in s                        # no audio pad when audio drives
 
 def test_original_segment_keeps_audio():
-    cmd = build_original_segment_cmd("source/base.mp4", "3:15", "3:52", "build/seg_SC07.mp4")
+    cmd = build_original_segment_cmd("source/eDV49.mp4", "3:15", "3:52", "build/seg_SC07.mp4")
     s = _joined(cmd)
     assert "-ss" in cmd and "195" in cmd          # 3:15 = 195s
     assert "-t" in cmd and "37" in cmd            # 3:52-3:15 = 37s

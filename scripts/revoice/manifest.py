@@ -43,6 +43,11 @@ class Manifest:
     output: str
     bgm: dict
     scenes: list
+    # 다화자(팟캐스트) 전용 — 없으면 revoice_tts의 기본값을 쓴다. 기본값을 둬야 기존
+    # 1인 나레이션 매니페스트가 그대로 로드된다.
+    voices: dict = field(default_factory=dict)   # {"진행자": "Kore", "전문가": "Charon"}
+    dialogue_style: str = ""                     # 다화자 TTS 프롬프트 프리픽스
+    pronounce: dict = field(default_factory=dict)  # TTS 전용 발음 보정 사전 (자막은 원표기 유지)
 
 
 def validate_manifest(m: Manifest) -> None:

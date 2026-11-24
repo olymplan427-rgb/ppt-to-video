@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][string]$PptxPath,
   [Parameter(Mandatory=$true)][string]$DurationsJson,
   [Parameter(Mandatory=$true)][string]$OutDir,
@@ -15,6 +15,8 @@ param(
 # 완전히 빠진다(실측 확인됨) — 슬라이드마다 파일을 복사·재오픈할 필요 없이 한 세션에서 처리한다.
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $durations = Get-Content $DurationsJson -Raw | ConvertFrom-Json
 
@@ -39,27 +41,59 @@ foreach ($prop in $durations.PSObject.Properties) {
     # 각 구간의 요소들은 그 구간이 끝나는 시각(=그 문장이 다 말해지는 시각)까지 순차
     # 페이드인을 마치도록 간격을 역산 — "전부 처음 2초에 등장, 나머지는 정적"이던
     # 문제를 없애고 화면이 나레이션을 따라 계속 살아있게 만든다.
-    $ngroups = [Math]::Min($checkpoints.Count, [Math]::Max(1, $n))
-    $base = [Math]::Floor($n / $ngroups)
-    $rem = $n % $ngroups
-    $idx = 1
+    # 헤더(페이지 타이틀·슬라이드 메인 메시지·브랜드 로고)와 본문 요소를 나눈다.
+    # 헤더는 씬이 열리면서 진행자 멘트와 함께 곧바로 뜬다 — 화제를 여는 동안 화면이
+    # 비어 있으면 어색하고, 이 요소들은 전문가가 하나씩 짚어 설명할 대상이 아니다.
+    # 본문 요소만 전문가 대사 체크포인트에 배분한다(사용자 지적 2026-08-23).
+    # 판정은 위치로 한다 — 이 덱은 제목이 상단에, 로고가 상단 모서리에 고정돼 있다.
+    $headerCut = $pres.PageSetup.SlideHeight * 0.30
+    $headerIdx = @(); $bodyIdx = @()
+    for ($i = 1; $i -le $n; $i++) {
+      if ($slide.Shapes.Item($i).Top -lt $headerCut) { $headerIdx += $i } else { $bodyIdx += $i }
+    }
+    # 본문이 하나도 없으면(표지·간지 슬라이드) 전부 헤더로 취급해 한 번에 띄운다.
+    if ($bodyIdx.Count -eq 0) { $headerIdx = 1..$n; $bodyIdx = @() }
+
+    foreach ($i in $headerIdx) {
+      $eff = $seq.AddEffect($slide.Shapes.Item($i), 10, 0, 3)
+      $eff.Timing.Duration = 0.45
+      $eff.Timing.TriggerDelayTime = 0.12     # 촘촘히 이어 붙여 도입부에 함께 등장
+    }
+
+    $nb = $bodyIdx.Count
+    # 본문 요소가 체크포인트보다 적으면 예전엔 Min()으로 잘라 '앞쪽' 체크포인트만 썼다.
+    # 그러면 설명이 한창일 때 화면은 이미 다 나와 정지한다. 잘라내지 말고 전 구간에서
+    # 고르게 솎아, 마지막 요소가 마지막 문장에 떨어지게 한다.
+    $cps = @($checkpoints)
+    if ($nb -gt 0 -and $nb -lt $cps.Count) {
+      $picked = @()
+      for ($j = 1; $j -le $nb; $j++) {
+        $picked += $cps[[int][Math]::Ceiling($j * $cps.Count / $nb) - 1]
+      }
+      $cps = $picked
+    }
+    $ngroups = [Math]::Min($cps.Count, [Math]::Max(1, $nb))
+    $base = [Math]::Floor($nb / $ngroups)
+    $rem = $nb % $ngroups
+    $bi = 0
     $prevCp = 0.0
     for ($g = 0; $g -lt $ngroups; $g++) {
+      if ($nb -eq 0) { break }
       $groupSize = $base + $(if ($g -ge ($ngroups - $rem)) { 1 } else { 0})
       if ($groupSize -lt 1) { continue }
-      $target = $checkpoints[$g]
+      $target = $cps[$g]
       $window = [Math]::Max(0.15, $target - $prevCp)
       $gap = if ($groupSize -gt 1) { [Math]::Max(0.06, [Math]::Min(1.2, $window / ($groupSize - 1))) }
              else { [Math]::Min(0.7, $window) }
       $effDur = $gap * 0.6
       $effDelay = $gap * 0.4
       for ($k = 0; $k -lt $groupSize; $k++) {
-        if ($idx -gt $n) { break }
-        $sh = $slide.Shapes.Item($idx)
+        if ($bi -ge $nb) { break }
+        $sh = $slide.Shapes.Item($bodyIdx[$bi])
         $eff = $seq.AddEffect($sh, 10, 0, 3)
         $eff.Timing.Duration = $effDur
         $eff.Timing.TriggerDelayTime = $effDelay
-        $idx += 1
+        $bi += 1
       }
       $prevCp = $target
     }
@@ -100,9 +134,12 @@ foreach ($prop in $durations.PSObject.Properties) {
   # 시도마다 임시 파일명을 다르게 써서, 이전 시도의 파일이 아직 잠겨 있어도(안티바이러스
   # 스캔 등) 삭제하려다 스크립트 전체가 죽는 일이 없게 한다 — 삭제 실패는 청소 실패일
   # 뿐 치명적 오류가 아니므로 try/catch로 흡수한다.
+  # 재시도 2회로는 부족했다 — 43장 렌더에서 5장(2·5·9·26·36)이 두 번 다 status=2로
+  # 실패해 정지 이미지로 떨어졌다. 같은 슬라이드가 다음 실행에선 한 번에 성공하는 걸
+  # 보면 콘텐츠 문제가 아니라 PowerPoint 인코더의 산발적 실패다. 4회로 늘린다.
   $status = 0
   $tmp = $null
-  for ($attempt = 1; $attempt -le 2; $attempt++) {
+  for ($attempt = 1; $attempt -le 4; $attempt++) {
     $tmp = "$out.attempt$attempt.tmp.mp4"
     try { if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction Stop } } catch { }
     $pres.CreateVideo($tmp, $true, 2, $Width, $Fps, 85)
@@ -119,11 +156,24 @@ foreach ($prop in $durations.PSObject.Properties) {
     try { if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction Stop } } catch { }
     Write-Output "FAILED $slideNo status=$status"
   } else {
-    Move-Item -Force $tmp $out
-    Write-Output "RENDERED $slideNo $out"
+    # CreateVideoStatus=3은 "인코딩이 끝났다"는 뜻이지 "파일 핸들을 놓았다"는 뜻이 아니다.
+    # PowerPoint가 잠깐 더 붙들고 있어서 곧바로 Move하면 IOException이 나고, 그게
+    # 비종료 오류로 새어 나가 스크립트 종료코드를 1로 만들어 렌더 전체가 죽는다
+    # (43장 렌더 중 slide_03에서 실제로 이 경합으로 중단됨). 놓을 때까지 기다린다.
+    $moved = $false
+    for ($m = 1; $m -le 30; $m++) {
+      try { Move-Item -Force $tmp $out -ErrorAction Stop; $moved = $true; break }
+      catch { Start-Sleep -Milliseconds 500 }
+    }
+    if ($moved) {
+      Write-Output "RENDERED $slideNo $out"
+    } else {
+      Write-Output "FAILED $slideNo status=locked"
+    }
   }
   $pres.Slides.Item($slideNo).SlideShowTransition.Hidden = 1
 }
 
 $pres.Close()
-$app.Quit()
+# 사용자가 다른 PPT를 열어 둔 채일 수 있다 — 우리가 연 것만 닫고, 아무것도 안 남았을 때만 종료.
+if ($app.Presentations.Count -eq 0) { $app.Quit() }

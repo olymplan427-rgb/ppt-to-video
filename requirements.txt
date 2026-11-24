@@ -1,5 +1,8 @@
-google-genai
-python-pptx
-faster-whisper
-yt-dlp
-pytest
+python-pptx>=1.0
+google-genai>=1.0
+faster-whisper>=1.0
+Pillow>=10.0
+numpy>=1.26
+pymupdf>=1.24
+yt-dlp>=2025.0
+pytest>=8.0

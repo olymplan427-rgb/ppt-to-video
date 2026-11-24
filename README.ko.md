@@ -1,71 +1,51 @@
-# ppt-to-video
+# ppt-to-video (v2)
 
 *다른 언어로 보기: [English](README.md) | **한국어***
 
-PowerPoint 슬라이드를 **PPT 요소 애니메이션이 살아있는 나레이션 영상**으로 만드는
-Claude Code Skill이다. 기존 영상을 씬 단위로 리컷·리보이스하는 것도 같은 파이프라인
-안에서 처리한다. 슬라이드는 절대 HTML로 다시 그리지 않는다.
+PowerPoint 슬라이드를 **1인 나레이션 또는 2인 팟캐스트 대화형 설명회 영상**으로 만드는
+AI 에이전트 스킬(Claude Code / Antigravity 공용) 및 Python 파이프라인이다.
+**Windows와 macOS를 모두 지원**하며, 슬라이드는 절대 HTML로 다시 그리지 않는다.
 
-## 왜 이렇게 만들었나
+## 주요 기능
 
-"PPT로 영상 만들기"의 흔한 방법은 슬라이드를 HTML/CSS로 재현해서 그 위에 애니메이션을
-얹는 것이다. 실제로 해보면 브랜드의 실제 룩(폰트·사진·정확한 레이아웃)에서 벗어나
-흔한 템플릿처럼 보이게 된다.
+- **원본 슬라이드 100% 보존**: Windows에서는 PowerPoint COM(네이티브 요소 페이드인 애니메이션 포함), macOS/Linux/미설치 PC에서는 LibreOffice 헤드리스(+PyMuPDF) 또는 수동 PNG(`--reuse-pngs`)로 자동 동작한다.
+- **1인 나레이션 & 2인 팟캐스트 TTS**: Gemini TTS(`MultiSpeakerVoiceConfig`)로 두 화자의 자연스러운 대화를 합성하고, 503/429 재시도 · 무음 패딩 트리밍 · 발음 보정 사전(`pronounce`)을 내장했다.
+- **Whisper 단어 싱크 자막**: 합성 음성을 `faster-whisper`로 전사해 실제 발화 시각에 자막을 맞추고, 배경 밝기에 따라 자막 박스 색상을 자동 반전한다.
+- **증분 캐시 빌드**: 대본이나 화면이 바뀐 씬만 다시 만들어 TTS 쿼터와 시간을 절약한다.
+- **마감 마스터링(`revoice.finalize`)**: 전 씬 `-16 LUFS` 음량 정규화, 자료 카드 오버레이, 광고 구간 직전 BGM 페이드아웃, 음성 아래 BGM 자동 덕킹을 처리한다.
 
-이 도구는 대신 **PowerPoint 자체**를 COM 자동화로 구동한다:
-
-- 슬라이드는 PowerPoint 자체 렌더러로 PNG로 내보낸다 — 원본 파일과 픽셀 단위로
-  동일하며, 다시 그리는 과정이 없다.
-- 요소 등장 애니메이션(순차 페이드인)은 PowerPoint의 네이티브 `Slide.TimeLine`
-  애니메이션 엔진으로 넣고 `Presentation.CreateVideo()`로 mp4로 뽑는다 — 사람이
-  PowerPoint에서 직접 쓰는 것과 같은 엔진이지, 재구현한 게 아니다.
-- 나레이션 음성은 합성(Gemini TTS) 후 **faster-whisper로 다시 전사**해 실제 단어
-  단위 타임스탬프를 얻고, 이 타임스탬프가 슬라이드 요소가 등장하는 시점을 정한다 —
-  고정된 일반 타이밍이 아니라 실제로 말하는 내용과 맞물려 등장한다.
-- ffmpeg가 슬라이드 애니메이션·나레이션·배경음악(음성 아래로 더킹)·인터뷰/B롤
-  클립을 전부 합성한다.
-
-Windows + 정품 데스크톱 PowerPoint에서만 안정적으로 동작한다(PowerPoint COM
-자동화는 마이크로소프트가 서버 환경에서 공식적으로 지원하지 않음) — 다른 환경에서
-쓰고 싶다면 트레이드오프는 `references/pipeline.md`(영문) 참고.
-
-## 설치
-
-Claude Code 스킬 디렉터리에 클론한다:
+## 설치 (Claude Code / Antigravity)
 
 ```bash
+# Claude Code용
 git clone https://github.com/olymplan427-rgb/ppt-to-video.git ~/.claude/skills/ppt-to-video
+
+# Antigravity용 (원하는 경우 동일 저장소 클론)
+git clone https://github.com/olymplan427-rgb/ppt-to-video.git ~/.gemini/antigravity/skills/ppt-to-video
 ```
 
-그리고 영상을 만들 프로젝트에서:
+가상환경 생성 후 패키지 설치 및 환경 점검:
 
 ```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate   |   macOS/Linux: source .venv/bin/activate
+pip install -r ~/.claude/skills/ppt-to-video/requirements.txt
 python ~/.claude/skills/ppt-to-video/scripts/check_env.py
 ```
 
-이건 환경을 **점검만** 한다(PowerPoint·ffmpeg·Node.js·Python 패키지·
-`GEMINI_API_KEY`) — 스스로 아무것도 설치하지 않는다. 빠진 게 있으면 출력된 안내를
-따라 직접 설치한다.
+프로젝트 루트에 `.env` 파일을 만들고 API 키를 넣는다:
 
-`scripts/revoice/`를 프로젝트에 복사한다(프로젝트 루트에서
-`python -m revoice.<모듈>`로 호출하는 구조):
-
-```bash
-cp -r ~/.claude/skills/ppt-to-video/scripts/revoice ./revoice
+```env
+GEMINI_API_KEY=your_api_key_here
 ```
 
-## 사용법
-
-Claude가 따르는 워크플로우는 [SKILL.md](SKILL.md)를, 매니페스트 스키마 전체·
-애니메이션 내부 동작·알려진 제약은 [references/pipeline.md](references/pipeline.md)
-를 참고한다(둘 다 본문은 원래 한글로 작성돼 있음 — 지금 이 두 README만 한/영 병기).
-
-매니페스트가 있다면 기본 루프는:
+## 기본 실행 루프
 
 ```bash
-python -m revoice.build render --manifest manifest.json --dry-run   # API 호출 없이 미리보기
-python -m revoice.build render --manifest manifest.json             # 변경된 씬만 재빌드
-python -m revoice.build render --manifest manifest.json --only P03  # 씬 하나만 재빌드
+python -m revoice.deck slides.pptx deck                               # 1. 슬라이드 PNG + outline.json
+python -m revoice.build render --manifest manifest.json --dry-run     # 2. 미리보기 (API 호출 0)
+python -m revoice.build render --manifest manifest.json               # 3. 변경 씬만 증분 빌드
+python -m revoice.finalize --manifest manifest.json --bgm bgm/bgm.wav # 4. -16 LUFS 마감 합본
 ```
 
 ## 테스트

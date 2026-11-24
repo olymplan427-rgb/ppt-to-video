@@ -7,6 +7,7 @@
 
 명령:
   python -m revoice.deck  <파일.pptx> [deck]   PPT → 슬라이드 PNG + outline.json
+  python -m revoice.build seed                 기존 영상 전사 → 매니페스트 시드
   python -m revoice.build render --dry-run     무엇이 다시 만들어질지만 보기
   python -m revoice.build render               변경분만 재빌드 → 최종 mp4
   python -m revoice.build render --only SC03   그 씬만 다시 만들고 최종 재결합
@@ -35,15 +36,16 @@ import json
 import hashlib
 import subprocess
 
-from revoice.manifest import load_manifest
+from revoice.manifest import load_manifest, save_manifest
 from revoice.timecode import parse_tc
 from revoice.timing import reconcile
-from revoice import compose, deck, download, transcribe, revoice_tts, lyria_bgm
+from revoice import compose, deck, download, env, transcribe, revoice_tts, lyria_bgm
+
+env.load_dotenv()
 
 MANIFEST = "manifest.json"
 BUILD = "build"
 AUDIO = "audio"
-ANIM_DIR = os.path.join("deck", "anim")
 CACHE = os.path.join(BUILD, ".cache.json")
 
 _SLIDE_NO_RE = re.compile(r"slide_(\d+)\.png$")
@@ -51,11 +53,11 @@ _SLIDE_NO_RE = re.compile(r"slide_(\d+)\.png$")
 # 캐시는 입력 데이터만 해시하고 렌더링 코드 자체는 보지 않는다 — _render_scene의 조립
 # 로직을 바꿀 때마다(이번엔 file= 경로에 리드인 적용 누락을 고침) 이 값을 올려야 예전
 # 캐시가 "안 바뀐 것"으로 오판돼 낡은 세그먼트를 계속 재사용하는 사고를 막는다.
-_CODEGEN_VERSION = "2"
+_CODEGEN_VERSION = "9"   # 9: no-anim 씬은 푸시인 제거(zoompan 1px 떨림) — 완전 고정 화면
 
 # 애니메이션 캐시 전용 버전 — 체크포인트 계산 알고리즘(_sentence_checkpoints)이 바뀌면
 # narration·duration이 그대로여도 결과가 달라지므로 올려야 한다.
-_ANIM_CODEGEN_VERSION = "2"
+_ANIM_CODEGEN_VERSION = "4"   # 4: 헤더(제목·로고)는 도입부 일괄, 본문만 대사에 배분
 
 # 확정되지 않은 수치·문구 표식. 1차 제작 때 "⚠확인"이 붙은 채로 최종 프레임까지
 # 흘러가 화면에 그대로 박힌 사고가 있었다. 렌더 전에 차단한다.
@@ -94,10 +96,95 @@ def _stamp(path: str) -> str:
         return "missing"
 
 
+def _bg_is_light(path: str) -> bool:
+    """자막이 놓이는 화면 하단이 밝은 배경인가 — 이미지·영상 모두 첫 프레임으로 판정.
+
+    아이보리 자막 박스는 네이비 슬라이드에서는 잘 읽히지만 브랜드 오프화이트 슬라이드
+    위에서는 박스가 배경에 묻혀 글자만 떠 보인다. 밝으면 색을 뒤집는다. 하단 25%만
+    보는 이유는 자막이 거기 놓이기 때문 — 상단이 짙어도 하단이 밝으면 안 읽힌다.
+    """
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", path, "-frames:v", "1",
+             "-vf", "crop=iw:ih*0.25:0:ih*0.75,scale=1:1",
+             "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            capture_output=True, timeout=60)
+        return bool(out.stdout) and out.stdout[0] > 140
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _dialogue_checkpoints(narration: str, words: list, total_dur: float):
+    """전문가가 말하는 구간에만 화면 요소 등장 시점을 놓는다. 대화가 아니면 None.
+
+    진행자의 질문은 화제를 여는 도입이지 화면 요소를 꺼낼 대목이 아니다. 대사 전체에
+    균등 배분하면 질문이 끝나기도 전에 요소가 다 나와, 정작 전문가가 설명할 때는 화면이
+    정지해 있다(사용자 지적). 전문가 문장이 끝나는 시점들만 체크포인트로 준다 —
+    첫 구간은 0부터 시작하므로 제목 등 앞쪽 요소는 여전히 질문 중에 떠 있다.
+    """
+    turns = [(w, t) for w, t in revoice_tts.parse_dialogue(narration) if w != "BEAT"]
+    if not turns:
+        return None
+    units = []                       # (화자, 문장) — 발화 순서
+    for who, text in turns:
+        for s in re.split(r'(?<=[.?!])\s+', text):
+            if s.strip():
+                units.append((who, s.strip()))
+    counts = [max(1, len(s.split())) for _, s in units]
+    total_script = sum(counts)
+    n_audio = len(words)
+    # 전사 단어 수가 대본과 크게 어긋나면(오인식) 위치 추정을 믿을 수 없다 — 비례 배분.
+    use_words = n_audio > 0 and abs(n_audio - total_script) / total_script <= 0.4
+
+    cps, cum = [], 0
+    for (who, _), c in zip(units, counts):
+        cum += c
+        if who != "전문가":
+            continue
+        if use_words:
+            idx = max(0, min(int(round(cum / total_script * n_audio)), n_audio) - 1)
+            cps.append(words[idx]["end"])
+        else:
+            cps.append(total_dur * cum / total_script)
+    if not cps:
+        return None
+    cps[-1] = total_dur
+    return cps
+
+
+def _dialogue_cfg(m):
+    """매니페스트에 다화자 설정이 있으면 그걸, 없으면 기본값(진행자=Kore/전문가=Charon)."""
+    return (getattr(m, "dialogue_style", "") or revoice_tts.DIALOGUE_STYLE,
+            getattr(m, "voices", None) or revoice_tts.DIALOGUE_VOICES)
+
+
+def _spoken_text(narration: str) -> str:
+    """실제로 발화되는 텍스트만 — 화자 라벨과 `>` 영상 인용 줄을 걷어낸다.
+
+    체크포인트는 대본 단어 수와 whisper 전사 단어 수의 '비율'로 위치를 잡는데,
+    전사본에는 "진행자:" 라벨도 영상 인용 줄도 없다. 대본 쪽만 그것들을 세면 비율이
+    어긋나 화면 요소가 엉뚱한 시점에 등장한다. 1인 나레이션이면 원문을 그대로 돌려준다.
+    """
+    turns = revoice_tts.parse_dialogue(narration)
+    if not turns:
+        return narration
+    return " ".join(t for who, t in turns if who != "BEAT")
+
+
 def _voice_key(sc, m) -> str:
-    """나레이션 음성이 달라지는 입력만 — 대본·스타일·보이스."""
+    """나레이션 음성이 달라지는 입력만 — 대본·스타일·보이스.
+
+    다화자 씬일 때만 화자·보이스 배정을 키에 더한다. 1인 나레이션 씬의 키를 예전과
+    똑같이 유지해야 기존 빌드(구 23슬라이드판)의 음성 캐시가 통째로 무효화되지 않는다.
+    """
+    parts = [sc.narration, m.tts_style, m.voice]
+    if revoice_tts.parse_dialogue(sc.narration):
+        style, voices = _dialogue_cfg(m)
+        parts.append([style, sorted(voices.items())])
     return hashlib.sha1(
-        json.dumps([sc.narration, m.tts_style, m.voice], ensure_ascii=False).encode()
+        json.dumps(parts, ensure_ascii=False).encode()
     ).hexdigest()[:16]
 
 
@@ -107,16 +194,29 @@ def _slide_no(path: str) -> int:
     return int(mo.group(1)) if mo else None
 
 
-def _anim_path(slide_no: int) -> str:
-    return os.path.join(ANIM_DIR, f"slide_{slide_no:02d}.mp4")
+def _deck_dir(slide_file: str) -> str:
+    """슬라이드 PNG가 있는 덱 디렉터리. 프로젝트에 덱이 여러 개 있을 수 있다."""
+    return os.path.dirname((slide_file or "").replace("\\", "/")) or "deck"
+
+
+def _anim_path(slide_file: str) -> str:
+    """`deck_260821/slide_07.png` → `deck_260821/anim/slide_07.mp4`.
+
+    애니메이션 mp4를 슬라이드 PNG 옆에 두면 덱마다 자동으로 갈린다. 예전처럼
+    deck/anim 한 곳에 몰아넣으면, 슬라이드 번호가 겹치는 다른 덱의 빌드가 서로의
+    애니메이션을 조용히 덮어쓴다(구 23슬라이드판 vs 신 43슬라이드 팟캐스트판).
+    """
+    no = _slide_no(slide_file)
+    if no is None:
+        return ""
+    return os.path.join(_deck_dir(slide_file), "anim", f"slide_{no:02d}.mp4")
 
 
 def _scene_key(sc, m, wav: str) -> str:
     """세그먼트 영상이 달라지는 모든 입력."""
     inputs = [sc.file, m.source_file if sc.type in ("VO", "ORIGINAL") else "", wav]
-    no = _slide_no(sc.file) if sc.type == "SLIDE" else None
-    if no is not None:
-        inputs.append(_anim_path(no))
+    if sc.type == "SLIDE":
+        inputs.append(_anim_path(sc.file))
     return hashlib.sha1(json.dumps(
         [_CODEGEN_VERSION, sc.__dict__, [_stamp(p) for p in inputs if p]],
         ensure_ascii=False, sort_keys=True
@@ -136,6 +236,28 @@ def check_gate(m) -> list:
     return hits
 
 
+# ---------------------------------------------------------------- seed
+
+def cmd_seed():
+    from revoice.scene_seed import build_seed_manifest
+    if os.path.exists(MANIFEST):
+        print(f"[seed] {MANIFEST} 이미 있음 — 검수본 보호를 위해 덮어쓰지 않음. "
+              f"재생성하려면 파일을 지우세요.")
+        return
+    src = download.download_source("eDV49nXi6CE")
+    words_path = transcribe.transcribe(src)
+    with open(words_path, encoding="utf-8") as f:
+        words = json.load(f)
+    m = build_seed_manifest()
+    for sc in m.scenes:
+        if sc.type == "VO":
+            sc.narration = transcribe.text_between(
+                words, parse_tc(sc.src_in), parse_tc(sc.src_out)) or "(대본 확인 필요)"
+    save_manifest(m, MANIFEST)
+    print(f"[seed] 매니페스트 생성 완료 → {MANIFEST}")
+    print("       ▶ manifest.json 을 검토·수정(순서/대본/유형)한 뒤 'render'를 실행하세요.")
+
+
 # ---------------------------------------------------------------- render
 
 def _narrate(sc, m, cache: dict, force: bool, dry: bool = False) -> str:
@@ -145,10 +267,21 @@ def _narrate(sc, m, cache: dict, force: bool, dry: bool = False) -> str:
     if not force and os.path.exists(wav) and cache.get(f"voice:{sc.id}") == key:
         return wav
     if dry:
-        print(f"[voice] {sc.id} 재합성 예정 (TTS 호출)")
+        kind = "다화자" if revoice_tts.parse_dialogue(sc.narration) else "1인"
+        print(f"[voice] {sc.id} 재합성 예정 ({kind} TTS 호출)")
         return wav
-    revoice_tts.synth_scene(sc.narration, m.tts_style, m.voice, wav)
+    pronounce = getattr(m, "pronounce", None) or None
+    if revoice_tts.parse_dialogue(sc.narration):
+        style, voices = _dialogue_cfg(m)
+        revoice_tts.synth_dialogue(sc.narration, style, wav, voices, pronounce=pronounce)
+    else:
+        revoice_tts.synth_scene(sc.narration, m.tts_style, m.voice, wav, pronounce=pronounce)
     cache[f"voice:{sc.id}"] = key
+    # 씬마다 즉시 저장 — 예전엔 나레이션을 전부 만든 뒤 애니메이션 단계에서 처음
+    # 저장했다. 그래서 애니메이션에서 죽으면 이미 만들어 둔 WAV가 멀쩡히 있는데도
+    # 기록이 없어 다음 실행이 44개를 통째로 다시 합성했다(실제로 그러다 429를 맞음).
+    # TTS는 돈과 쿼터가 드는 호출이라, 성공한 건 그 자리에서 기록해야 한다.
+    _save_cache(cache)
     print(f"[voice] {sc.id} → {wav}")
     return wav
 
@@ -232,19 +365,32 @@ def _render_scene(sc, m, wav: str, seg: str) -> None:
         return
 
     tts_dur = _probe_dur(wav)
+    # 자막 색은 실제로 뒤에 깔릴 화면의 밝기로 정한다 — SLIDE는 애니메이션 mp4(없으면
+    # 슬라이드 PNG), VO는 그 영상 자체.
+    bg_ref = (_anim_path(sc.file) if sc.type == "SLIDE" else "") or sc.file
+    # 같은 WAV의 전사 단어 타임스탬프를 자막 타이밍에 그대로 쓴다(캐시돼 있어 공짜).
+    # 글자수 비례 배분은 발화 속도를 일정하다고 가정해 자막이 음성보다 앞서 나갔다.
+    try:
+        words = _narration_words(sc, wav)
+    except Exception:
+        words = None
     srt = compose.create_scene_srt(sc.narration, tts_dur,
                                    os.path.join(BUILD, f"sub_{sc.id}.srt"),
-                                   start_offset=compose._LEAD_IN)
+                                   start_offset=compose._LEAD_IN,
+                                   light_bg=_bg_is_light(bg_ref),
+                                   words=words)
 
     if sc.type == "SLIDE":
-        no = _slide_no(sc.file)
-        anim = _anim_path(no) if no is not None else None
+        # 지난 빌드에서 만들어 둔 애니메이션 파일이 남아 있어도 no-anim이면 쓰지 않는다.
+        anim = "" if "no-anim" in (sc.flags or []) else _anim_path(sc.file)
         if anim and os.path.exists(anim):
             _composite_video_base(anim, wav, tts_dur, srt, seg)
         else:
             # PPT 요소 애니메이션을 못 만들었을 때의 대체 — 정지 이미지 + 느린 푸시인.
+            # no-anim 씬은 푸시인도 빼고 완전 고정(zoompan의 1px 떨림 제거).
+            zoom = 0.0 if "no-anim" in (sc.flags or []) else 0.06
             compose.run_ffmpeg(compose.build_slide_segment_cmd(
-                sc.file, wav, tts_dur, seg, srt_file=srt))
+                sc.file, wav, tts_dur, seg, srt_file=srt, zoom=zoom))
         return
 
     # VO: file이 지정되면 그 영상을 화면으로 쓰고, 없으면 원본 설명회 영상 구간을 쓴다.
@@ -319,17 +465,53 @@ def _ensure_slide_animations(m, wavs: dict, cache: dict, only, rebuild_all: bool
     """
     if not use_anim:
         return
-    outline_path = os.path.join("deck", "outline.json")
+    # 덱 디렉터리는 매니페스트의 SLIDE 씬이 가리키는 곳에서 얻는다. 예전엔 "deck"으로
+    # 하드코딩돼 있었는데, 프로젝트에 덱이 둘 이상이면(구 23슬라이드 deck/ vs 신
+    # 43슬라이드 deck_260821/) 엉뚱한 PPT로 애니메이션을 만들어 넣는다.
+    # 덱 슬라이드(slide_NN.png)인 것만 본다. SLIDE 타입이라고 다 덱은 아니다 —
+    # 클립 뒤 홀드 프레임(clips_podcast/DP21_hold.png)도 SLIDE로 태우는데, 그건
+    # 애니메이션 대상이 아니라 정지 이미지다. 예전엔 이것까지 세어 "덱이 둘"이라며
+    # 렌더를 막았다.
+    slide_files = [sc.file for sc in m.scenes
+                   if sc.type == "SLIDE" and _slide_no(sc.file) is not None]
+    if not slide_files:
+        return
+    decks = {_deck_dir(f) for f in slide_files}
+    if len(decks) > 1:
+        raise SystemExit(f"[anim] 한 매니페스트가 여러 덱을 가리킵니다: {sorted(decks)} "
+                         f"— 슬라이드 애니메이션의 원본 PPT를 정할 수 없습니다.")
+    deck_dir = decks.pop()
+    outline_path = os.path.join(deck_dir, "outline.json")
     if not os.path.exists(outline_path):
         return
     with open(outline_path, encoding="utf-8") as f:
         pptx = json.load(f).get("source_pptx")
+    # 다른 PC에서 클론했을 때 outline.json에 이전 PC의 절대경로가 남아 있을 수 있다.
+    # 상대경로·현재 폴더·상위 폴더(m.source 파일명) 순으로 자동 복구한다.
+    if pptx and not os.path.exists(pptx):
+        rel_try = os.path.join(deck_dir, pptx)
+        if os.path.exists(rel_try):
+            pptx = rel_try
+        else:
+            name = os.path.basename(pptx.replace("\\", "/")) or os.path.basename(m.source or "")
+            for base_dir in (".", "..", os.path.join("..", "..")):
+                cand = os.path.join(base_dir, name)
+                if name and os.path.exists(cand):
+                    pptx = cand
+                    break
     if not pptx or not os.path.exists(pptx):
+        return
+    if not deck.has_powerpoint():
+        print("[anim]  PowerPoint COM 미감지(macOS/Linux 또는 미설치) — 정지/푸시인 슬라이드로 자동 진행합니다.")
         return
 
     todo = {}          # slide_no -> {duration, checkpoints}
     for sc in m.scenes:
         if sc.type != "SLIDE":
+            continue
+        # 표지·간지·숫자 요약처럼 한 화면으로 읽히는 장표와, 영상 뒤 부연설명용 슬라이드는
+        # 요소가 하나씩 뜨면 오히려 산만하다 — 매니페스트에서 no-anim으로 지정한다.
+        if "no-anim" in (sc.flags or []):
             continue
         no = _slide_no(sc.file)
         if no is None:
@@ -345,8 +527,10 @@ def _ensure_slide_animations(m, wavs: dict, cache: dict, only, rebuild_all: bool
             [_ANIM_CODEGEN_VERSION, _stamp(pptx), no, round(dur, 1), sc.narration],
             ensure_ascii=False).encode()
         ).hexdigest()[:16]
-        anim = _anim_path(no)
-        if rebuild_all or not os.path.exists(anim) or cache.get(f"anim:{no}") != key:
+        anim = _anim_path(sc.file)
+        # 캐시 키에 덱을 포함 — 슬라이드 번호만으로는 덱이 다른 빌드끼리 충돌한다.
+        if rebuild_all or not os.path.exists(anim) \
+                or cache.get(f"anim:{deck_dir}:{no}") != key:
             todo[no] = {"dur": dur, "key": key, "sc": sc, "wav": wav}
 
     if not todo:
@@ -362,14 +546,16 @@ def _ensure_slide_animations(m, wavs: dict, cache: dict, only, rebuild_all: bool
         words = _narration_words(t["sc"], t["wav"])
         # 리드인(정적) 만큼 체크포인트를 뒤로 밀어 — 애니메이션은 씬 전체(리드인+발화) 기준.
         raw_dur = t["dur"] - compose._LEAD_IN
-        checkpoints = [compose._LEAD_IN + c for c in
-                      _sentence_checkpoints(t["sc"].narration, words, raw_dur)]
+        raw_cps = (_dialogue_checkpoints(t["sc"].narration, words, raw_dur)
+                   or _sentence_checkpoints(_spoken_text(t["sc"].narration), words, raw_dur))
+        checkpoints = [compose._LEAD_IN + c for c in raw_cps]
         payload[no] = {"duration": t["dur"], "checkpoints": checkpoints}
 
-    rendered = deck.render_animated_slides(pptx, payload, out_dir=ANIM_DIR)
+    rendered = deck.render_animated_slides(
+        pptx, payload, out_dir=os.path.join(deck_dir, "anim"))
     for no, t in todo.items():
         if no in rendered:
-            cache[f"anim:{no}"] = t["key"]
+            cache[f"anim:{deck_dir}:{no}"] = t["key"]
             print(f"[anim]  slide_{no:02d} → {rendered[no]}")
     _save_cache(cache)
 
@@ -393,6 +579,18 @@ def cmd_render(only=None, rebuild_all=False, force_gate=False, new_bgm=False, dr
         raise SystemExit(2)
 
     cache = _load_cache()
+
+    # TTS는 무료 티어 기준 모델당 하루 100회다(소진되면 23시간 잠김 — 백오프로 안 풀린다).
+    # 몇 회를 쓸 참인지 먼저 알려 준다. 예전엔 모르고 돌렸다가 하루 작업이 막혔다.
+    todo_tts = [sc.id for sc in m.scenes
+                if sc.type in ("VO", "SLIDE") and (only is None or sc.id in only)
+                and not (not (rebuild_all and (only is None or sc.id in only))
+                         and os.path.exists(os.path.join(AUDIO, f"{sc.id}.wav"))
+                         and cache.get(f"voice:{sc.id}") == _voice_key(sc, m))]
+    if todo_tts:
+        print(f"[tts]   이번 실행에서 TTS {len(todo_tts)}회 호출 예정 "
+              f"(무료 티어 한도 100회/일) — {', '.join(todo_tts[:6])}"
+              f"{' …' if len(todo_tts) > 6 else ''}")
 
     # 1단계: 나레이션 WAV 확보 (SLIDE 애니메이션 길이를 정하려면 TTS 길이를 먼저 알아야 함).
     wavs = {}
@@ -461,7 +659,9 @@ def cmd_render(only=None, rebuild_all=False, force_gate=False, new_bgm=False, dr
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     cmd = argv[0] if argv else ""
-    if cmd == "trust-audio":
+    if cmd == "seed":
+        cmd_seed()
+    elif cmd == "trust-audio":
         cmd_trust_audio()
     elif cmd == "render":
         only = None

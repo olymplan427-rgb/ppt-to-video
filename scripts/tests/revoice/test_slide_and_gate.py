@@ -111,15 +111,27 @@ def test_slide_no_none_for_non_deck_file():
 
 
 def test_anim_path_is_two_digit_padded():
-    assert build._anim_path(7) == os.path.join("deck", "anim", "slide_07.mp4")
-    assert build._anim_path(23) == os.path.join("deck", "anim", "slide_23.mp4")
+    assert build._anim_path("deck/slide_07.png") == os.path.join("deck", "anim", "slide_07.mp4")
+    assert build._anim_path("deck/slide_23.png") == os.path.join("deck", "anim", "slide_23.mp4")
+
+
+def test_anim_path_follows_its_own_deck():
+    """덱이 여러 개인 프로젝트에서 슬라이드 번호가 겹쳐도 애니메이션이 섞이면 안 된다."""
+    a = build._anim_path("deck/slide_07.png")
+    b = build._anim_path("deck_260821/slide_07.png")
+    assert a != b
+    assert b == os.path.join("deck_260821", "anim", "slide_07.mp4")
+
+
+def test_anim_path_empty_for_non_slide_file():
+    assert build._anim_path("clips/interview_a.mp4") == ""
 
 
 def test_scene_key_includes_animation_background_for_slide_type(tmp_path, monkeypatch):
     """SLIDE 씬은 정지 PNG가 그대로여도, 사전 렌더한 애니메이션 mp4가 바뀌면 재세그해야 한다."""
     monkeypatch.chdir(tmp_path)
     os.makedirs(os.path.join("deck", "anim"))
-    anim = build._anim_path(2)
+    anim = build._anim_path("deck/slide_02.png")
     with open(anim, "wb") as f:
         f.write(b"v1")
 

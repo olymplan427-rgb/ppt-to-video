@@ -3,7 +3,7 @@ import os
 import subprocess
 
 
-def download_source(video_id: str, out: str = "source/base.mp4") -> str:
+def download_source(video_id: str, out: str = "source/eDV49.mp4") -> str:
     os.makedirs(os.path.dirname(out), exist_ok=True)
     if os.path.exists(out):
         print(f"[download] exists, skip: {out}")

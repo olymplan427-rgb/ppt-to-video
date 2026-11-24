@@ -1,76 +1,52 @@
-# ppt-to-video
+# ppt-to-video (v2)
 
-*Read this in: **English** | [한국어](README.ko.md)*
+*Read in other languages: **English** | [한국어](README.ko.md)*
 
-A Claude Code Skill that turns a PowerPoint deck into a narrated video with
-real PowerPoint element animation — or re-cuts/re-voices an existing
-presentation-style video — without ever re-drawing slides in HTML.
+An AI agent skill (Claude Code & Antigravity) and Python pipeline that turns PowerPoint
+decks into **single-narrator or 2-host podcast briefing videos** with Whisper-synced
+subtitles, incremental caching, and `-16 LUFS` mastering. Supports both **Windows and macOS**
+without ever redrawing slides in HTML.
 
-## Why this exists
+## Highlights
 
-The common approach to "make a video from a PPT" is to re-render the deck as
-HTML/CSS and animate that. In practice this drifts from the brand's actual
-look (fonts, photos, exact layout) and looks like a generic template.
+- **Pixel-faithful slide rendering**: Uses native PowerPoint COM on Windows (including element-by-element fade-in animations synced to speech checkpoints) and automatically falls back to LibreOffice headless + PyMuPDF (or `--reuse-pngs`) on macOS/Linux/no-PowerPoint machines.
+- **Single-speaker & 2-host podcast TTS**: Gemini TTS with `MultiSpeakerVoiceConfig`, automatic 429/503 retries, silence padding trimmer, and a TTS-only pronunciation dictionary (`pronounce`) that keeps subtitles clean.
+- **Whisper word-synced subtitles**: Aligns subtitles to real spoken timestamps via `faster-whisper`, prevents awkward line breaks, and flips subtitle contrast automatically for light vs. dark slide bottoms.
+- **Incremental build cache**: Rebuilds only changed scenes (`--dry-run`, `--only`).
+- **Mastering (`revoice.finalize`)**: `-16 LUFS` loudness normalization, timed overlay cards, pre-ad BGM fadeout, and sidechain BGM ducking.
 
-This tool instead drives **PowerPoint itself** via COM automation:
-
-- Slides are exported to PNG using PowerPoint's own renderer — pixel-identical
-  to the original file, no re-authoring.
-- Element entrance animation (fade-in, sequenced) is added through
-  PowerPoint's native `Slide.TimeLine` animation engine and rendered to MP4
-  via `Presentation.CreateVideo()` — the same engine a human editor would use
-  in PowerPoint, not a reimplementation.
-- Narration audio is synthesized (Gemini TTS) and then **transcribed back**
-  with faster-whisper to get real word-level timestamps, which drive when
-  each slide element appears — so elements land in sync with what's actually
-  being said, not a fixed generic timing.
-- ffmpeg composites everything: slide animation, narration, background music
-  (ducked under the voice), and any interview/B-roll clips.
-
-Only works reliably on Windows with a licensed desktop PowerPoint install
-(PowerPoint COM automation isn't officially supported server-side by
-Microsoft) — see `references/pipeline.md` for the tradeoffs if you want to
-run this elsewhere.
-
-## Install
-
-Clone into your Claude Code skills directory:
+## Quick Setup
 
 ```bash
+# Claude Code
 git clone https://github.com/olymplan427-rgb/ppt-to-video.git ~/.claude/skills/ppt-to-video
+
+# Antigravity (optional)
+git clone https://github.com/olymplan427-rgb/ppt-to-video.git ~/.gemini/antigravity/skills/ppt-to-video
 ```
 
-Then, from any project where you want to build a video:
+Install Python dependencies and run the cross-platform environment checker:
 
 ```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate   |   macOS/Linux: source .venv/bin/activate
+pip install -r ~/.claude/skills/ppt-to-video/requirements.txt
 python ~/.claude/skills/ppt-to-video/scripts/check_env.py
 ```
 
-This only *checks* your environment (PowerPoint, ffmpeg, Node.js, Python
-packages, `GEMINI_API_KEY`) — it never installs anything itself. Fix
-whatever it flags as missing, following the printed instructions.
+Create a `.env` file in your project root:
 
-Copy `scripts/revoice/` into your project (it's called as
-`python -m revoice.<module>` from the project root):
-
-```bash
-cp -r ~/.claude/skills/ppt-to-video/scripts/revoice ./revoice
+```env
+GEMINI_API_KEY=your_api_key_here
 ```
 
-## Usage
-
-See [SKILL.md](SKILL.md) for the workflow Claude follows, and
-[references/pipeline.md](references/pipeline.md) for the full manifest
-schema, animation internals, and known limitations. (Note: this repo's
-deeper docs and code comments are written in Korean — only this README
-is bilingual for now.)
-
-Quick loop once you have a manifest:
+## Basic Loop
 
 ```bash
-python -m revoice.build render --manifest manifest.json --dry-run   # preview, no API calls
-python -m revoice.build render --manifest manifest.json             # build changed scenes
-python -m revoice.build render --manifest manifest.json --only P03  # rebuild one scene
+python -m revoice.deck slides.pptx deck
+python -m revoice.build render --manifest manifest.json --dry-run
+python -m revoice.build render --manifest manifest.json
+python -m revoice.finalize --manifest manifest.json --bgm bgm/bgm.wav
 ```
 
 ## Tests

@@ -3,9 +3,14 @@ import json
 import os
 
 
-def transcribe(src: str, out: str = "transcript/base.words.json",
-               model_size: str = "large-v3") -> str:
+from revoice.env import load_dotenv
+
+
+def transcribe(src: str, out: str = "transcript/eDV49.words.json",
+               model_size: str = None) -> str:
     from faster_whisper import WhisperModel
+    load_dotenv()
+    model_size = model_size or os.environ.get("WHISPER_MODEL", "large-v3")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     if os.path.exists(out):
         print(f"[transcribe] exists, skip: {out}")
