@@ -173,16 +173,31 @@ def _spoken_text(narration: str) -> str:
     return " ".join(t for who, t in turns if who != "BEAT")
 
 
-def _voice_key(sc, m) -> str:
-    """나레이션 음성이 달라지는 입력만 — 대본·스타일·보이스.
+def _resolve_tts_model(m) -> tuple[str, str]:
+    """실제 사용할 TTS 모델 결정: manifest 이력 > 환경변수(.env) > 신규 기본값(3.8)."""
+    pinned = (getattr(m, "tts_model", "") or "").strip()
+    if pinned:
+        return pinned, "manifest 이력"
+    env_m = os.environ.get("GEMINI_TTS_MODEL", "").strip()
+    if env_m:
+        return env_m, ".env/환경변수"
+    return revoice_tts.DEFAULT_MODEL, "신규 기본값"
 
-    다화자 씬일 때만 화자·보이스 배정을 키에 더한다. 1인 나레이션 씬의 키를 예전과
-    똑같이 유지해야 기존 빌드(구 23슬라이드판)의 음성 캐시가 통째로 무효화되지 않는다.
+
+def _voice_key(sc, m) -> str:
+    """나레이션 음성이 달라지는 입력만 — 대본·스타일·보이스·(신규 모델 전환 시 모델 ID).
+
+    기존 10·11월판(레거시 3.1 또는 모델 미지정)의 키는 예전과 100% 동일하게 유지해
+    기존 캐시가 무효화되지 않도록 보호하고, 새 모델(예: gemini-3.8-flash-tts)로 전환하면
+    전체 씬이 일괄 재합성되도록 모델 ID를 키에 포함한다.
     """
     parts = [sc.narration, m.tts_style, m.voice]
     if revoice_tts.parse_dialogue(sc.narration):
         style, voices = _dialogue_cfg(m)
         parts.append([style, sorted(voices.items())])
+    pinned = (getattr(m, "tts_model", "") or "").strip()
+    if pinned and pinned != revoice_tts.LEGACY_DEFAULT_MODEL:
+        parts.append(["tts_model", pinned])
     return hashlib.sha1(
         json.dumps(parts, ensure_ascii=False).encode()
     ).hexdigest()[:16]
@@ -260,29 +275,34 @@ def cmd_seed():
 
 # ---------------------------------------------------------------- render
 
-def _narrate(sc, m, cache: dict, force: bool, dry: bool = False) -> str:
+def _narrate(sc, m, cache: dict, force: bool, dry: bool = False,
+             model: str = None) -> str:
     """VO/SLIDE 씬의 나레이션 WAV를 확보 — 대본이 안 바뀌었으면 재호출하지 않는다."""
     wav = os.path.join(AUDIO, f"{sc.id}.wav")
     key = _voice_key(sc, m)
     if not force and os.path.exists(wav) and cache.get(f"voice:{sc.id}") == key:
         return wav
+    mdl = model or _resolve_tts_model(m)[0]
     if dry:
         kind = "다화자" if revoice_tts.parse_dialogue(sc.narration) else "1인"
-        print(f"[voice] {sc.id} 재합성 예정 ({kind} TTS 호출)")
+        print(f"[voice] {sc.id} 재합성 예정 ({kind} TTS 호출 · {mdl})")
         return wav
     pronounce = getattr(m, "pronounce", None) or None
     if revoice_tts.parse_dialogue(sc.narration):
         style, voices = _dialogue_cfg(m)
-        revoice_tts.synth_dialogue(sc.narration, style, wav, voices, pronounce=pronounce)
+        revoice_tts.synth_dialogue(sc.narration, style, wav, voices,
+                                   pronounce=pronounce, model=mdl)
     else:
-        revoice_tts.synth_scene(sc.narration, m.tts_style, m.voice, wav, pronounce=pronounce)
+        revoice_tts.synth_scene(sc.narration, m.tts_style, m.voice, wav,
+                                pronounce=pronounce, model=mdl)
     cache[f"voice:{sc.id}"] = key
+    cache[f"voice_model:{sc.id}"] = mdl
     # 씬마다 즉시 저장 — 예전엔 나레이션을 전부 만든 뒤 애니메이션 단계에서 처음
     # 저장했다. 그래서 애니메이션에서 죽으면 이미 만들어 둔 WAV가 멀쩡히 있는데도
     # 기록이 없어 다음 실행이 44개를 통째로 다시 합성했다(실제로 그러다 429를 맞음).
     # TTS는 돈과 쿼터가 드는 호출이라, 성공한 건 그 자리에서 기록해야 한다.
     _save_cache(cache)
-    print(f"[voice] {sc.id} → {wav}")
+    print(f"[voice] {sc.id} → {wav} ({mdl})")
     return wav
 
 
@@ -579,6 +599,9 @@ def cmd_render(only=None, rebuild_all=False, force_gate=False, new_bgm=False, dr
         raise SystemExit(2)
 
     cache = _load_cache()
+    tts_model, model_src = _resolve_tts_model(m)
+    mstatus = revoice_tts.check_model_status(tts_model)
+    print(f"[tts]   사용 모델: {tts_model} (출처: {model_src})")
 
     # TTS는 무료 티어 기준 모델당 하루 100회다(소진되면 23시간 잠김 — 백오프로 안 풀린다).
     # 몇 회를 쓸 참인지 먼저 알려 준다. 예전엔 모르고 돌렸다가 하루 작업이 막혔다.
@@ -587,6 +610,19 @@ def cmd_render(only=None, rebuild_all=False, force_gate=False, new_bgm=False, dr
                 and not (not (rebuild_all and (only is None or sc.id in only))
                          and os.path.exists(os.path.join(AUDIO, f"{sc.id}.wav"))
                          and cache.get(f"voice:{sc.id}") == _voice_key(sc, m))]
+
+    if mstatus["status"] == "deprecated":
+        print(f"[warn]  '{tts_model}' 모델은 {mstatus['shutdown_date']} 종료 예정입니다.")
+        print(f"        기존 부분 수정은 이 모델로 음색을 맞출 수 있으나, 종료 후에는 "
+              f"manifest의 tts_model을 '{mstatus['replacement']}'로 바꿔 전체 재생성을 권장합니다.")
+    elif mstatus["status"] == "retired" and todo_tts:
+        print(f"[제안]  기존 TTS 모델 '{tts_model}'이 {mstatus['shutdown_date']}부로 종료되었습니다.")
+        print("        일부 씬만 다른 모델로 합성하면 기존 씬들과 음색·톤이 달라집니다.")
+        print(f"        → 매니페스트의 `tts_model`을 '{mstatus['replacement']}'로 변경해 "
+              "전체 씬을 새 모델로 일괄 생성하시겠습니까?")
+        if not dry:
+            raise SystemExit(3)
+
     if todo_tts:
         print(f"[tts]   이번 실행에서 TTS {len(todo_tts)}회 호출 예정 "
               f"(무료 티어 한도 100회/일) — {', '.join(todo_tts[:6])}"
@@ -594,10 +630,17 @@ def cmd_render(only=None, rebuild_all=False, force_gate=False, new_bgm=False, dr
 
     # 1단계: 나레이션 WAV 확보 (SLIDE 애니메이션 길이를 정하려면 TTS 길이를 먼저 알아야 함).
     wavs = {}
-    for sc in m.scenes:
-        if sc.type in ("VO", "SLIDE"):
-            targeted = only is None or sc.id in only
-            wavs[sc.id] = _narrate(sc, m, cache, force=rebuild_all and targeted, dry=dry)
+    try:
+        for sc in m.scenes:
+            if sc.type in ("VO", "SLIDE"):
+                targeted = only is None or sc.id in only
+                wavs[sc.id] = _narrate(sc, m, cache, force=rebuild_all and targeted,
+                                       dry=dry, model=tts_model)
+    except revoice_tts.ModelUnavailableError as e:
+        print(f"\n[모델 종료 감지] {e}")
+        print(f"  → 제안: 매니페스트의 `tts_model`을 '{e.replacement}'로 변경한 뒤 "
+              f"전체 씬을 새 모델로 일괄 재생성하세요.")
+        raise SystemExit(3)
 
     # 2단계: 그 길이에 맞춰 SLIDE 씬의 PPT 요소 애니메이션을 한 세션에서 일괄 렌더.
     _ensure_slide_animations(m, wavs, cache, only, rebuild_all, dry, use_anim)

@@ -42,7 +42,7 @@ python scripts/check_env.py
    - 2인 대화형은 `진행자: ...` / `전문가: ...` (또는 매니페스트 `voices`에 지정한 커스텀 화자명) 형식을 쓰면 `revoice.build`가 자동으로 Gemini 다화자 TTS(`MultiSpeakerVoiceConfig`)로 합성한다.
    - 자막은 원표기를 유지하되 발음만 고쳐야 하는 단어(예: `YES24`→`예스24`)는 매니페스트의 `pronounce` 사전에 등록한다.
 3. **매니페스트 구성**: `SLIDE` / `VO` / `ORIGINAL` / `CLIP` / `EXTERNAL` 씬을 배합해 `manifest.json` 생성.
-   - 기존 영상의 **수정판(예: 12월판)**을 만들 때는 **수정한 씬 ID에만 월별 접미사(예: `DP01_12`)**를 붙여 원본 캐시(`audio/`, `build/seg_*`, `build/fin/*`)를 100% 보호한다.
+   - **TTS 모델 이력 관리**: 신규 전체 제작은 기본 모델 **`gemini-3.8-flash-tts`**를 사용하고 `manifest.json`의 `tts_model` 필드에 기록한다. 기존 영상의 부분 수정판(예: 12월판)을 만들 때는 **수정한 씬 ID에만 월별 접미사(예: `DP01_12`)**를 붙이고 기존 `tts_model` 이력을 유지해 음색과 캐시를 보호한다. 만약 기존 모델이 종료·오류로 사용 불가하면 일부 씬만 다른 모델로 섞지 말고, 사용자에게 `gemini-3.8-flash-tts`로 전체 재생성을 먼저 제안한다.
 4. **미리보기 (API 비용 0원)**: `python -m revoice.build render --manifest <파일> --dry-run`
    - TTS 호출 횟수와 재빌드 대상 씬을 먼저 확인한다.
 5. **세그먼트 렌더**: `python -m revoice.build render --manifest <파일>`

@@ -37,12 +37,14 @@ Scene(id, type, file="", src_in="", src_out="", narration="", note="", flags=[])
 
 Manifest 최상위 필드:
 - `source`, `source_file`, `voice`, `tts_style`, `output`, `bgm{engine,prompt,duck}`, `scenes[]`
-- **2인 팟캐스트 전용**: `voices` (예: `{"진행자": "Erinome", "전문가": "Alnilam"}`), `dialogue_style` (짧게 유지 — 600자 이상 길면 모델 무음 패딩 오류 발생)
+- **2인 팟캐스트 전용**: `voices` (예: `{"진행자": "Erinome", "전문가": "Alnilam"}`), `dialogue_style` (2.5/3.1 레거시 모델용 — 짧게 유지)
+- **TTS 모델 이력(`tts_model`)**: 이 매니페스트를 합성한 모델 ID를 기록한다. 신규 전체 제작 기본값은 `gemini-3.8-flash-tts`이며, 기존 작업 부분 수정 시 기록된 `tts_model`을 유지해 씬 간 음색 차이를 방지한다. 기존 모델이 종료(404/retired)되면 `build.py`가 `gemini-3.8-flash-tts`로 전체 재생성을 자동 제안한다.
 - **TTS 발음 보정**: `pronounce` (예: `{"YES24": "예스24", "채점표": "채쩜표"}` — 자막은 원표기를 유지하고 TTS 입력만 치환)
 
 ### 2인 다화자 TTS 주의사항 (`revoice/revoice_tts.py`)
 
-- 씬 나레이션에 `진행자:` / `전문가:` (또는 `voices` 키에 등록된 화자명)가 있으면 자동으로 `MultiSpeakerVoiceConfig`를 호출한다.
+- 씬 나레이션에 `진행자:` / `전문가:` (또는 `voices` 키에 등록된 화자명)가 있으면 자동으로 다화자 TTS를 호출한다.
+- `gemini-3.8-flash-tts` / `3.8-flash-lite-tts`는 `speechMetadata.speaker` 구조화 형식을 자동 사용하고, 1인 나레이션 시에도 스타일 지시문을 낭독하지 않도록 본문만 전송한다. `2.5` / `3.1` 레거시 모델은 기존 SDK 형식으로 자동 분기된다.
 - `[BEAT 0.8s]` 마커는 TTS 구간 사이에 무음을 삽입하며 자막에서는 자동 제거된다.
 - 503/429 일시 오류는 지수 백오프로 최대 6회 자동 재시도한다.
 - Gemini 3.1 TTS가 간헐적으로 뒤에 붙이는 긴 0-패딩 무음은 `_trim_trailing_silence`가 자동 압축한다.

@@ -48,6 +48,7 @@ class Manifest:
     voices: dict = field(default_factory=dict)   # {"진행자": "Kore", "전문가": "Charon"}
     dialogue_style: str = ""                     # 다화자 TTS 프롬프트 프리픽스
     pronounce: dict = field(default_factory=dict)  # TTS 전용 발음 보정 사전 (자막은 원표기 유지)
+    tts_model: str = ""                          # 이 판을 합성한 TTS 모델 이력 (부분 수정 시 일관성 유지용)
 
 
 def validate_manifest(m: Manifest) -> None:
