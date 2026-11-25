@@ -4,26 +4,30 @@ import os
 import pytest
 
 
-def test_dotenv_loader_respects_existing_env(tmp_path, monkeypatch):
+def test_dotenv_loader_overrides_global_env_for_nonempty_values(tmp_path, monkeypatch):
     from revoice import env
     dot = tmp_path / ".env"
     dot.write_text(
         "# comment\n"
         "TEST_PORTABLE_A=from_dotenv\n"
         "TEST_PORTABLE_B=\"quoted value\"\n"
-        "TEST_PORTABLE_KEEP=ignored\n",
+        "TEST_PORTABLE_OVERRIDE=from_project_dotenv\n"
+        "TEST_PORTABLE_EMPTY=\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("TEST_PORTABLE_A", raising=False)
     monkeypatch.delenv("TEST_PORTABLE_B", raising=False)
-    monkeypatch.setenv("TEST_PORTABLE_KEEP", "from_shell")
+    monkeypatch.setenv("TEST_PORTABLE_OVERRIDE", "from_windows_global")
+    monkeypatch.setenv("TEST_PORTABLE_EMPTY", "keep_when_dotenv_empty")
     env._LOADED_PATHS.discard(str(dot.resolve()))
 
     loaded = env.load_dotenv(str(tmp_path))
     assert loaded == str(dot.resolve())
     assert os.environ["TEST_PORTABLE_A"] == "from_dotenv"
     assert os.environ["TEST_PORTABLE_B"] == "quoted value"
-    assert os.environ["TEST_PORTABLE_KEEP"] == "from_shell"
+    assert os.environ["TEST_PORTABLE_OVERRIDE"] == "from_project_dotenv"
+    assert os.environ["TEST_PORTABLE_EMPTY"] == "keep_when_dotenv_empty"
+    assert env.is_from_dotenv("TEST_PORTABLE_OVERRIDE") is True
 
 
 def test_parse_dialogue_supports_custom_speakers():

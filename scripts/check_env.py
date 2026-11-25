@@ -138,15 +138,20 @@ def check_python_packages():
 def check_gemini_key():
     key = ""
     dot_path = ""
+    from_dot = False
     try:
         from revoice import env as _env
         dot_path = _env.load_dotenv()
         key = _env.get_api_key()
+        from_dot = _env.is_from_dotenv("GEMINI_API_KEY") or _env.is_from_dotenv("GOOGLE_API_KEY")
     except Exception:
         key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
     if key:
-        src = f".env ({dot_path})" if dot_path and os.environ.get("GEMINI_API_KEY") == key else "환경변수"
+        if from_dot and dot_path:
+            src = f"프로젝트 .env 우선 적용 ({dot_path})"
+        else:
+            src = "OS 환경변수"
         _ok("GEMINI_API_KEY", f"{len(key)}자 ({src})")
         return True
     _missing(
